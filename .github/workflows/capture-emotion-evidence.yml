@@ -1,0 +1,75 @@
+name: Capture real Watson assignment screenshots
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - .github/workflows/capture-emotion-evidence.yml
+      - capture_remaining_screenshots.py
+
+permissions:
+  contents: write
+
+jobs:
+  capture:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Check the live Watson connection
+        run: |
+          python - <<'PY'
+          import json
+          import urllib.request
+          request = urllib.request.Request(
+              'https://sn-watson-emotion.labs.skills.network/v1/watson.runtime.nlp.v1/NlpService/EmotionPredict',
+              data=json.dumps({'raw_document': {'text': 'I am glad this happened'}}).encode(),
+              headers={
+                  'Content-Type': 'application/json',
+                  'grpc-metadata-mm-model-id': 'emotion_aggregated-workflow_lang_en_stock',
+              },
+          )
+          with urllib.request.urlopen(request, timeout=20) as response:
+              data = json.load(response)
+              scores = data['emotionPredictions'][0]['emotion']
+              assert all(isinstance(scores[name], (int, float)) for name in ('anger', 'disgust', 'fear', 'joy', 'sadness'))
+              print('Live Watson request succeeded:', response.status)
+              print(scores)
+          PY
+      - name: Install application and screenshot dependencies
+        run: |
+          python -m pip install -r requirements.txt playwright
+          python -m playwright install --with-deps chromium
+      - name: Capture real predictions, passing tests, and the web application
+        run: python capture_remaining_screenshots.py --output remaining_uploads
+      - name: Save the four generated screenshots in the repository
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import shutil
+          names = ('3b_formatted_output_test.png', '4b_packaging_test.png', '5b_unit_testing_result.png', '6b_deployment_test.png')
+          destination = Path('evidence')
+          destination.mkdir(exist_ok=True)
+          for name in names:
+              source = Path('remaining_uploads') / name
+              assert source.is_file() and source.stat().st_size > 0, name
+              shutil.copyfile(source, destination / name)
+          PY
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add evidence/3b_formatted_output_test.png evidence/4b_packaging_test.png evidence/5b_unit_testing_result.png evidence/6b_deployment_test.png
+          if ! git diff --cached --quiet; then
+            git commit -m 'Capture four screenshots from live Watson predictions and tests'
+            git push origin HEAD:main
+          fi
+      - name: Retain any real screenshots produced by this run
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: real-watson-screenshots
+          path: remaining_uploads/*.png
+          if-no-files-found: ignore
+          retention-days: 7
